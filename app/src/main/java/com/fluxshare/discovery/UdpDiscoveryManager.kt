@@ -163,6 +163,7 @@ object UdpDiscoveryManager {
     /**
      * Stops listening for UDP discovery packets.
      */
+    @Synchronized
     fun stopRoomHost() {
         try {
             serverSocket?.close()
@@ -235,6 +236,7 @@ object UdpDiscoveryManager {
                 }
 
                 try {
+                    recvPacket.length = recvBuffer.size
                     clientSocket.receive(recvPacket)
                     val receivedText = String(recvPacket.data, 0, recvPacket.length, Charsets.UTF_8).trim()
 

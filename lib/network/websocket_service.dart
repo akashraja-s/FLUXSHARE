@@ -12,10 +12,14 @@ class WebSocketService {
   Stream<Map<String, dynamic>> get messages => _messageController.stream;
   bool get isConnected => _channel != null;
 
-  /// Connects to host's /ws endpoint.
-  Future<bool> connect(String hostIp, int hostPort) async {
+  /// Connects to host's /ws endpoint supporting both named and positional parameters.
+  Future<bool> connect({
+    required String hostIp,
+    required int port,
+    String? localPeerId,
+  }) async {
     disconnect();
-    final uri = Uri.parse('ws://$hostIp:$hostPort/ws');
+    final uri = Uri.parse('ws://$hostIp:$port/ws');
     try {
       final channel = WebSocketChannel.connect(uri);
       await channel.ready;
@@ -32,6 +36,15 @@ class WebSocketService {
         onError: (_) => disconnect(),
       );
 
+      // If localPeerId provided, announce join to coordinator
+      if (localPeerId != null) {
+        send({
+          'type': 'PEER_JOIN',
+          'peerId': localPeerId,
+          'timestamp': DateTime.now().millisecondsSinceEpoch,
+        });
+      }
+
       // Start 5-second heartbeat
       _heartbeatTimer = Timer.periodic(const Duration(seconds: 5), (_) {
         send({
@@ -47,12 +60,57 @@ class WebSocketService {
     }
   }
 
+  /// Backward-compatible positional connect overload
+  Future<bool> connectPositional(String hostIp, int hostPort) =>
+      connect(hostIp: hostIp, port: hostPort);
+
   void send(Map<String, dynamic> message) {
     if (_channel != null) {
       try {
         _channel!.sink.add(jsonEncode(message));
       } catch (_) {}
     }
+  }
+
+  /// Broadcasts that a chunk has been downloaded and verified on disk.
+  void notifyChunkAvailable(int chunkId) {
+    send({
+      'type': 'CHUNK_AVAILABLE',
+      'chunkId': chunkId,
+      'timestamp': DateTime.now().millisecondsSinceEpoch,
+    });
+  }
+
+  /// Broadcasts that transfer finished and all chunks passed Tier 1-3 integrity.
+  void notifyTransferCompleted() {
+    send({
+      'type': 'TRANSFER_COMPLETED',
+      'timestamp': DateTime.now().millisecondsSinceEpoch,
+    });
+  }
+
+  /// Broadcasts that transfer has been paused.
+  void notifyTransferPaused() {
+    send({
+      'type': 'TRANSFER_PAUSED',
+      'timestamp': DateTime.now().millisecondsSinceEpoch,
+    });
+  }
+
+  /// Broadcasts that transfer has been resumed.
+  void notifyTransferResumed() {
+    send({
+      'type': 'TRANSFER_RESUMED',
+      'timestamp': DateTime.now().millisecondsSinceEpoch,
+    });
+  }
+
+  /// Broadcasts that transfer was cancelled by user.
+  void notifyTransferCancelled() {
+    send({
+      'type': 'TRANSFER_CANCELLED',
+      'timestamp': DateTime.now().millisecondsSinceEpoch,
+    });
   }
 
   void sendProgress({

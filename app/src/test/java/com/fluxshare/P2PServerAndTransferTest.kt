@@ -1,6 +1,8 @@
 package com.fluxshare
 
+import com.fluxshare.manifest.ChunkMeta
 import com.fluxshare.manifest.ChunkState
+import com.fluxshare.manifest.Manifest
 import com.fluxshare.manifest.ManifestGenerator
 import com.fluxshare.network.P2PServer
 import com.fluxshare.transfer.ChunkReceiverManager
@@ -107,6 +109,35 @@ class P2PServerAndTransferTest {
 
         client.newCall(invalidRequest).execute().use { response ->
             assertEquals(404, response.code)
+        }
+    }
+
+    @Test
+    fun testOutOfBoundsChunkBoundsReturns400() = runBlocking {
+        val file = tempFolder.newFile("small_source.txt")
+        file.writeBytes("12345".toByteArray())
+
+        // Create manifest with chunk pointing outside file boundaries
+        val badChunk = ChunkMeta(chunkId = 0, offset = 1000L, length = 500, sha256 = "abc")
+        val badManifest = Manifest(
+            fileId = "test-bad",
+            fileName = "small_source.txt",
+            fileSize = 5L,
+            chunkSize = 1024,
+            fileSha256 = "abc",
+            chunks = listOf(badChunk)
+        )
+
+        server.updateManifest(badManifest, file)
+        val port = server.start()
+
+        val request = Request.Builder()
+            .url("http://127.0.0.1:$port/chunk/0")
+            .get()
+            .build()
+
+        client.newCall(request).execute().use { response ->
+            assertEquals(400, response.code)
         }
     }
 

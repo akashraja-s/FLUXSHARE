@@ -18,12 +18,12 @@ class NetworkUtils {
         final bName = b.name.toLowerCase();
         int scoreA = 0;
         int scoreB = 0;
-        if (aName.startsWith('wlan') || aName.startsWith('ap') || aName.startsWith('p2p')) {
+        if (aName.startsWith('wlan') || aName.startsWith('ap') || aName.startsWith('p2p') || aName.startsWith('en')) {
           scoreA = 3;
         } else if (aName.startsWith('eth')) {
           scoreA = 2;
         }
-        if (bName.startsWith('wlan') || bName.startsWith('ap') || bName.startsWith('p2p')) {
+        if (bName.startsWith('wlan') || bName.startsWith('ap') || bName.startsWith('p2p') || bName.startsWith('en')) {
           scoreB = 3;
         } else if (bName.startsWith('eth')) {
           scoreB = 2;
@@ -35,9 +35,11 @@ class NetworkUtils {
         final name = iface.name.toLowerCase();
         if (name.startsWith('dummy') ||
             name.startsWith('tun') ||
+            name.startsWith('utun') ||
             name.startsWith('tap') ||
             name.startsWith('rmnet') ||
             name.startsWith('pdp') ||
+            name.startsWith('ipsec') ||
             name.startsWith('vboxnet')) {
           continue;
         }

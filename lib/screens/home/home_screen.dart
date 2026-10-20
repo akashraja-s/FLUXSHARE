@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
+import '../../ai/ai_service.dart';
 import '../../app/theme.dart';
 import '../../models/models.dart';
 import '../../repositories/device_repository.dart';
 import '../../repositories/transfer_repository.dart';
 import '../../widgets/widgets.dart';
+import '../ai_assistant/ai_assistant_screen.dart';
 import '../nearby_devices/nearby_devices_screen.dart';
 import '../receive_file/receive_file_screen.dart';
 import '../send_file/send_file_screen.dart';
@@ -84,6 +86,8 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
                 const SizedBox(height: AppSpacing.s24),
                 _buildActionButtons(),
+                const SizedBox(height: AppSpacing.s24),
+                _buildAIAssistantBanner(),
                 const SizedBox(height: AppSpacing.s24),
                 _buildNetworkStatusCard(),
                 const SizedBox(height: AppSpacing.s24),
@@ -415,4 +419,138 @@ class _HomeScreenState extends State<HomeScreen> {
       ],
     );
   }
+
+  Widget _buildAIAssistantBanner() {
+    final aiService = AIService();
+    final isEnabled = aiService.config.isAiEnabled;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(AppSpacing.s16),
+      decoration: BoxDecoration(
+        color: AppColors.backgroundWhite,
+        borderRadius: AppShapes.cardBorderRadius,
+        border: Border.all(color: AppColors.primaryBlack, width: 1.5),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(6),
+                decoration: const BoxDecoration(
+                  color: AppColors.primaryBlack,
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(
+                  Icons.auto_awesome_rounded,
+                  color: AppColors.backgroundWhite,
+                  size: 16,
+                ),
+              ),
+              const SizedBox(width: AppSpacing.s8),
+              const Text(
+                'AI Assistant',
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                  color: AppColors.primaryBlack,
+                ),
+              ),
+              const Spacer(),
+              Row(
+                children: [
+                  Container(
+                    width: 7,
+                    height: 7,
+                    decoration: BoxDecoration(
+                      color: isEnabled ? Colors.green : AppColors.mediumGray,
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    isEnabled ? 'Enabled' : 'Disabled',
+                    style: const TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.darkGray,
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+          const SizedBox(height: AppSpacing.s8),
+          const Text(
+            'Ask FLUXSHARE anything...',
+            style: TextStyle(
+              fontSize: 13,
+              color: AppColors.mediumGray,
+            ),
+          ),
+          const SizedBox(height: AppSpacing.s12),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _buildAssistantQuickChip('Why is my transfer slow?'),
+              _buildAssistantQuickChip('Analyze recent transfers'),
+              _buildAssistantQuickChip('Find large files'),
+              _buildAssistantQuickChip('Optimize transfer'),
+            ],
+          ),
+          const SizedBox(height: AppSpacing.s12),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: () {
+                Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => const AIAssistantScreen()),
+                );
+              },
+              icon: const Icon(Icons.chat_bubble_outline_rounded, size: 16, color: AppColors.primaryBlack),
+              label: const Text(
+                'OPEN ASSISTANT',
+                style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: AppColors.primaryBlack),
+              ),
+              style: OutlinedButton.styleFrom(
+                side: const BorderSide(color: AppColors.primaryBlack),
+                shape: RoundedRectangleBorder(borderRadius: AppShapes.buttonBorderRadius),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildAssistantQuickChip(String label) {
+    return InkWell(
+      onTap: () {
+        Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => const AIAssistantScreen()),
+        );
+      },
+      borderRadius: BorderRadius.circular(16),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        decoration: BoxDecoration(
+          color: AppColors.lightGray,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: AppColors.borderGray),
+        ),
+        child: Text(
+          label,
+          style: const TextStyle(
+            fontSize: 11,
+            fontWeight: FontWeight.w500,
+            color: AppColors.primaryBlack,
+          ),
+        ),
+      ),
+    );
+  }
 }
+

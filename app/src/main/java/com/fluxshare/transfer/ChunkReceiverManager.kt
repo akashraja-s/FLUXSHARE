@@ -8,6 +8,9 @@ import com.fluxshare.network.SafeLog
 import com.fluxshare.scheduler.ChunkScheduler
 import com.fluxshare.scheduler.RoundRobinScheduler
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -20,7 +23,11 @@ import okhttp3.Request
 import java.io.File
 import java.io.RandomAccessFile
 import java.security.MessageDigest
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 
 open class ChunkReceiverManager(
     private val okHttpClient: OkHttpClient = OkHttpClient.Builder()
@@ -50,10 +57,21 @@ open class ChunkReceiverManager(
         }
     }
 
+    private val fileWriteLocks = ConcurrentHashMap<String, Any>()
+
+    private fun getFileLock(file: File): Any {
+        val path = try { file.canonicalPath } catch (_: Exception) { file.absolutePath }
+        return fileWriteLocks.computeIfAbsent(path) { Any() }
+    }
+
     /**
      * Pre-allocates receiver destination file using RandomAccessFile.
      */
     fun preallocateFile(destFile: File, fileSize: Long) {
+        if (fileSize < 0L) {
+            SafeLog.w(SafeLog.TRANSFER, "preallocateFile called with negative fileSize $fileSize")
+            return
+        }
         val parent = destFile.parentFile
         val parentCreated = parent?.mkdirs()
         SafeLog.d(SafeLog.TRANSFER, "Preallocating file=${destFile.absolutePath} parentExists=${parent?.exists()} created=$parentCreated")
@@ -170,7 +188,8 @@ open class ChunkReceiverManager(
                 }
 
                 // Write to destFile at chunk.offset using RandomAccessFile and flush to disk
-                synchronized(destFile) {
+                val lock = getFileLock(destFile)
+                synchronized(lock) {
                     RandomAccessFile(destFile, "rw").use { raf ->
                         raf.seek(chunk.offset)
                         raf.write(bytes)
@@ -203,10 +222,11 @@ open class ChunkReceiverManager(
 
     /**
      * Cooperative P2P file download using scheduler and reservation manager across available peers.
+     * Supports dynamic peer provider, automatic peer failover, and parallel worker concurrency.
      */
     suspend fun downloadFileCooperative(
         manifest: Manifest,
-        peers: List<PeerInfo>,
+        peers: List<PeerInfo> = emptyList(),
         destFile: File,
         receiverId: String = "localReceiver",
         scheduler: ChunkScheduler = RoundRobinScheduler(),
@@ -215,95 +235,165 @@ open class ChunkReceiverManager(
         onProgressUpdate: ((bytesTransferred: Long, totalBytes: Long, speedMBps: Double, completedChunks: Int, totalChunks: Int, timeRemainingSeconds: Long) -> Unit)? = null,
         isCancelled: () -> Boolean = { false },
         isPaused: () -> Boolean = { false },
-        maxRetriesPerChunk: Int = 3
+        maxRetriesPerChunk: Int = 3,
+        peersProvider: (() -> List<PeerInfo>)? = null,
+        concurrency: Int = 3
     ): Boolean = withContext(Dispatchers.IO) {
         preallocateFile(destFile, manifest.fileSize)
         initChunkStates(manifest)
 
-        val missingChunks = manifest.chunks.map { it.chunkId }.toMutableSet()
+        val missingChunks = ConcurrentHashMap.newKeySet<Int>().apply {
+            addAll(manifest.chunks.map { it.chunkId })
+        }
         val totalChunks = manifest.chunks.size
-        var completedChunks = 0
-        var bytesTransferred = 0L
+        val completedChunks = AtomicInteger(0)
+        val bytesTransferred = AtomicLong(0L)
         var lastBytes = 0L
         var lastTime = System.currentTimeMillis()
+        val progressLock = Any()
 
-        SafeLog.i(SafeLog.TRANSFER, "Starting cooperative download for ${manifest.fileName} (${manifest.fileSize} bytes, $totalChunks chunks) with ${peers.size} peers")
+        val activeResManager = reservationManager ?: ChunkReservationManager()
+        val workerCount = concurrency.coerceIn(1, 8)
 
-        while (missingChunks.isNotEmpty()) {
-            if (isCancelled()) {
-                SafeLog.w(SafeLog.TRANSFER, "TRANSFER_CANCELLED during chunk transfer")
-                return@withContext false
-            }
+        SafeLog.i(SafeLog.TRANSFER, "Starting cooperative download for ${manifest.fileName} (${manifest.fileSize} bytes, $totalChunks chunks) with concurrency=$workerCount")
 
-            while (isPaused()) {
-                delay(200)
-                if (isCancelled()) return@withContext false
-            }
+        val fileFatalFailure = AtomicBoolean(false)
 
-            val selection = scheduler.pickSource(missingChunks, peers)
-            if (selection == null) {
-                SafeLog.e(SafeLog.TRANSFER, "No peer available with missing chunks $missingChunks")
-                return@withContext false
-            }
+        coroutineScope {
+            val workers = (0 until workerCount).map { workerIdx ->
+                val workerId = "worker_$workerIdx"
+                async(Dispatchers.IO) {
+                    var consecutiveNoWork = 0
+                    while (missingChunks.isNotEmpty() && !fileFatalFailure.get()) {
+                        if (isCancelled()) {
+                            SafeLog.w(SafeLog.TRANSFER, "TRANSFER_CANCELLED during chunk transfer ($workerId)")
+                            return@async false
+                        }
 
-            val (chunkId, peer) = selection
-            val chunkMeta = manifest.chunks.find { it.chunkId == chunkId } ?: break
+                        while (isPaused()) {
+                            delay(200)
+                            if (isCancelled() || fileFatalFailure.get()) return@async false
+                        }
 
-            if (reservationManager != null) {
-                val reserved = reservationManager.reserveChunk(manifest.fileId, receiverId, chunkId)
-                if (!reserved) {
-                    continue
+                        // Query current dynamic peers list
+                        val currentPeers = (peersProvider?.invoke() ?: peers).filter { it.ip.isNotBlank() && it.port > 0 }
+                        if (currentPeers.isEmpty()) {
+                            delay(300)
+                            continue
+                        }
+
+                        // Filter missing chunks to unreserved ones
+                        val unreservedMissing = missingChunks.filter { !activeResManager.isReserved(it) }.toSet()
+                        if (unreservedMissing.isEmpty()) {
+                            consecutiveNoWork++
+                            if (consecutiveNoWork > 150) { // wait up to ~7.5s
+                                break
+                            }
+                            delay(50)
+                            continue
+                        }
+                        consecutiveNoWork = 0
+
+                        val selection = scheduler.pickSource(unreservedMissing, currentPeers)
+                        if (selection == null) {
+                            delay(100)
+                            continue
+                        }
+
+                        val (chunkId, initialPeer) = selection
+                        val chunkMeta = manifest.chunks.find { it.chunkId == chunkId } ?: continue
+
+                        val reserved = activeResManager.tryReserve(chunkId, workerId)
+                        if (!reserved) {
+                            continue
+                        }
+
+                        SafeLog.d(SafeLog.SCHEDULER, "SCHEDULER_SELECT chunkId=$chunkId worker=$workerId peer=${initialPeer.peerId}")
+
+                        var success = false
+
+                        // Candidate peers that hold this chunk
+                        val candidatePeers = currentPeers.filter { it.availableChunks.contains(chunkId) }
+                        val peerQueue = mutableListOf<PeerInfo>()
+                        peerQueue.add(initialPeer)
+                        for (p in candidatePeers) {
+                            if (p.peerId != initialPeer.peerId && !peerQueue.any { it.peerId == p.peerId }) {
+                                peerQueue.add(p)
+                            }
+                        }
+
+                        // Attempt to download chunk with automatic peer failover
+                        for (targetPeer in peerQueue) {
+                            var peerAttempts = 0
+                            while (!success && peerAttempts < maxRetriesPerChunk) {
+                                if (isCancelled() || fileFatalFailure.get()) break
+                                peerAttempts++
+                                if (peerAttempts > 1) {
+                                    SafeLog.w(SafeLog.CHUNK, "CHUNK_RETRY chunkId=$chunkId attempt=$peerAttempts/$maxRetriesPerChunk peer=${targetPeer.peerId}")
+                                }
+                                success = downloadChunkFromPeer(targetPeer, chunkMeta, destFile)
+                                if (success) {
+                                    if (scheduler is com.fluxshare.scheduler.CooperativeScheduler) {
+                                        scheduler.markPeerSuccess(targetPeer.peerId)
+                                    }
+                                    break
+                                } else {
+                                    delay(150)
+                                }
+                            }
+                            if (success) break
+                            // Mark peer failure for failover
+                            if (scheduler is com.fluxshare.scheduler.CooperativeScheduler) {
+                                scheduler.markPeerFailure(targetPeer.peerId)
+                            }
+                            SafeLog.w(SafeLog.CHUNK, "Chunk $chunkId failed from ${targetPeer.peerId}, failing over to next available candidate...")
+                        }
+
+                        activeResManager.release(chunkId)
+
+                        if (success) {
+                            missingChunks.remove(chunkId)
+                            val doneCount = completedChunks.incrementAndGet()
+                            val transferred = bytesTransferred.addAndGet(chunkMeta.length.toLong())
+
+                            synchronized(progressLock) {
+                                val now = System.currentTimeMillis()
+                                val dtSec = ((now - lastTime) / 1000.0).coerceAtLeast(0.1)
+                                val speedBps = ((transferred - lastBytes) / dtSec).coerceAtLeast(0.0)
+                                val speedMBps = speedBps / (1024.0 * 1024.0)
+                                lastBytes = transferred
+                                lastTime = now
+
+                                val remainingBytes = (manifest.fileSize - transferred).coerceAtLeast(0L)
+                                val remainingSec = if (speedBps > 0) (remainingBytes / speedBps).toLong() else 0L
+
+                                onProgressUpdate?.invoke(
+                                    transferred,
+                                    manifest.fileSize,
+                                    speedMBps,
+                                    doneCount,
+                                    totalChunks,
+                                    remainingSec
+                                )
+                            }
+
+                            onChunkVerified?.invoke(chunkId)
+                        } else {
+                            // If all peers failed for this chunk after retries
+                            SafeLog.e(SafeLog.TRANSFER, "FATAL: Failed downloading chunk $chunkId from all candidate peers after failover attempts")
+                            fileFatalFailure.set(true)
+                            return@async false
+                        }
+                    }
+                    !fileFatalFailure.get()
                 }
             }
+            workers.awaitAll()
+        }
 
-            SafeLog.d(SafeLog.SCHEDULER, "SCHEDULER_SELECT chunkId=$chunkId selectedPeer=${peer.peerId} (${peer.ip}:${peer.port})")
-
-            var success = false
-            var attempt = 0
-            while (!success && attempt < maxRetriesPerChunk) {
-                attempt++
-                if (attempt > 1) {
-                    SafeLog.w(SafeLog.CHUNK, "CHUNK_RETRY chunkId=$chunkId attempt=$attempt of $maxRetriesPerChunk peer=${peer.peerId}")
-                }
-                success = downloadChunkFromPeer(peer, chunkMeta, destFile)
-                if (!success && attempt < maxRetriesPerChunk) {
-                    delay(200)
-                }
-            }
-
-            if (reservationManager != null) {
-                reservationManager.releaseReservation(manifest.fileId, receiverId, chunkId)
-            }
-
-            if (success) {
-                missingChunks.remove(chunkId)
-                completedChunks++
-                bytesTransferred += chunkMeta.length
-
-                val now = System.currentTimeMillis()
-                val dtSec = ((now - lastTime) / 1000.0).coerceAtLeast(0.1)
-                val speedBps = ((bytesTransferred - lastBytes) / dtSec).coerceAtLeast(0.0)
-                val speedMBps = speedBps / (1024.0 * 1024.0)
-                lastBytes = bytesTransferred
-                lastTime = now
-
-                val remainingBytes = (manifest.fileSize - bytesTransferred).coerceAtLeast(0L)
-                val remainingSec = if (speedBps > 0) (remainingBytes / speedBps).toLong() else 0L
-
-                onProgressUpdate?.invoke(
-                    bytesTransferred,
-                    manifest.fileSize,
-                    speedMBps,
-                    completedChunks,
-                    totalChunks,
-                    remainingSec
-                )
-
-                onChunkVerified?.invoke(chunkId)
-            } else {
-                SafeLog.e(SafeLog.TRANSFER, "Failed downloading chunk $chunkId from peer ${peer.peerId} after $maxRetriesPerChunk attempts")
-                return@withContext false
-            }
+        if (isCancelled() || fileFatalFailure.get() || missingChunks.isNotEmpty()) {
+            SafeLog.w(SafeLog.TRANSFER, "Download incomplete: missing=${missingChunks.size} cancelled=${isCancelled()} fatal=${fileFatalFailure.get()}")
+            return@withContext false
         }
 
         SafeLog.i(SafeLog.VERIFICATION, "All chunks downloaded. Running whole-file SHA-256 verification...")

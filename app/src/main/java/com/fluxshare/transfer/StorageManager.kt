@@ -18,6 +18,20 @@ import java.security.MessageDigest
 object StorageManager {
 
     /**
+     * Sanitizes raw file names against path traversal, control characters, and reserved symbols.
+     */
+    fun sanitizeFileName(rawName: String): String {
+        var name = rawName.replace('\\', '/')
+        if (name.contains('/')) {
+            name = name.substringAfterLast('/')
+        }
+        name = name.replace(Regex("""^\.+"""), "")
+        name = name.replace(Regex("""[<>:"/\\|?*\x00-\x1F]"""), "_")
+        name = name.trim().trimEnd('.')
+        return if (name.isBlank()) "fluxshare_file_${System.currentTimeMillis()}.bin" else name
+    }
+
+    /**
      * Obtains the primary app-storage file destination for an incoming transfer.
      */
     fun getDestinationFile(context: Context, fileName: String): File {
@@ -26,7 +40,13 @@ object StorageManager {
         val destDir = File(baseDir, "FluxShare")
         val dirCreated = destDir.mkdirs()
         SafeLog.d(SafeLog.TRANSFER, "getDestinationFile dir=${destDir.absolutePath} (exists=${destDir.exists()}, created=$dirCreated)")
-        return File(destDir, fileName)
+        val safeName = sanitizeFileName(fileName)
+        val candidate = File(destDir, safeName)
+        if (!candidate.canonicalPath.startsWith(destDir.canonicalPath)) {
+            SafeLog.w(SafeLog.TRANSFER, "Path traversal attempt detected: $fileName -> fallback to safe name")
+            return File(destDir, "fluxshare_file_${System.currentTimeMillis()}.bin")
+        }
+        return candidate
     }
 
     /**

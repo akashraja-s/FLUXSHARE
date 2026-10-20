@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import '../../ai/ai_models.dart';
+import '../../ai/ai_service.dart';
 import '../../app/theme.dart';
 import '../../models/models.dart';
 import '../../repositories/transfer_repository.dart';
@@ -13,8 +15,10 @@ class HistoryScreen extends StatefulWidget {
 
 class _HistoryScreenState extends State<HistoryScreen> {
   final TransferRepository _repository = TransferRepository();
+  final TextEditingController _searchController = TextEditingController();
   List<Transfer> _allHistory = [];
   String _selectedFilter = 'All'; // 'All', 'Completed', 'Failed', 'Cancelled'
+  String _searchQuery = '';
   bool _isLoading = true;
 
   @override
@@ -33,24 +37,44 @@ class _HistoryScreenState extends State<HistoryScreen> {
     }
   }
 
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
   List<Transfer> get _filteredTransfers {
+    List<Transfer> base;
     switch (_selectedFilter) {
       case 'Completed':
-        return _allHistory
+        base = _allHistory
             .where((t) => t.status == TransferStatus.completed)
             .toList();
+        break;
       case 'Failed':
-        return _allHistory
+        base = _allHistory
             .where((t) => t.status == TransferStatus.failed)
             .toList();
+        break;
       case 'Cancelled':
-        return _allHistory
+        base = _allHistory
             .where((t) => t.status == TransferStatus.cancelled)
             .toList();
+        break;
       case 'All':
       default:
-        return _allHistory;
+        base = _allHistory;
+        break;
     }
+
+    if (_searchQuery.trim().isNotEmpty && AIService().config.isAiEnabled) {
+      return AIService().smartSearch.searchTransfers(
+        query: _searchQuery,
+        transfers: base,
+      );
+    }
+
+    return base;
   }
 
   @override
@@ -74,6 +98,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
       ),
       body: Column(
         children: [
+          _buildSearchBar(),
           const SizedBox(height: AppSpacing.s8),
           _buildFilterBar(),
           const SizedBox(height: AppSpacing.s8),
@@ -347,5 +372,93 @@ class _HistoryScreenState extends State<HistoryScreen> {
       ];
       return '${months[dt.month - 1]} ${dt.day}, $timeStr';
     }
+  }
+
+  Widget _buildSearchBar() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: AppSpacing.s16, vertical: AppSpacing.s8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          TextField(
+            controller: _searchController,
+            onChanged: (val) {
+              setState(() {
+                _searchQuery = val;
+              });
+            },
+            decoration: InputDecoration(
+              hintText: 'Search: "videos today", "> 500 MB", "Akash"...',
+              hintStyle: const TextStyle(fontSize: 13, color: AppColors.mediumGray),
+              prefixIcon: const Icon(Icons.search_rounded, size: 20, color: AppColors.primaryBlack),
+              suffixIcon: _searchQuery.isNotEmpty
+                  ? IconButton(
+                      icon: const Icon(Icons.clear_rounded, size: 18, color: AppColors.mediumGray),
+                      onPressed: () {
+                        _searchController.clear();
+                        setState(() {
+                          _searchQuery = '';
+                        });
+                      },
+                    )
+                  : null,
+              filled: true,
+              fillColor: AppColors.lightGray,
+              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: const BorderSide(color: AppColors.borderGray),
+              ),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: const BorderSide(color: AppColors.borderGray),
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: const BorderSide(color: AppColors.primaryBlack),
+              ),
+            ),
+          ),
+          const SizedBox(height: 6),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: [
+                _buildSearchFilterChip('Videos today'),
+                const SizedBox(width: 6),
+                _buildSearchFilterChip('> 500 MB'),
+                const SizedBox(width: 6),
+                _buildSearchFilterChip('PDFs this week'),
+                const SizedBox(width: 6),
+                _buildSearchFilterChip('Largest files'),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSearchFilterChip(String query) {
+    final isSelected = _searchQuery.toLowerCase() == query.toLowerCase();
+    return ActionChip(
+      backgroundColor: isSelected ? AppColors.primaryBlack : AppColors.backgroundWhite,
+      side: const BorderSide(color: AppColors.borderGray),
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      label: Text(
+        query,
+        style: TextStyle(
+          fontSize: 11,
+          fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+          color: isSelected ? AppColors.backgroundWhite : AppColors.primaryBlack,
+        ),
+      ),
+      onPressed: () {
+        setState(() {
+          _searchController.text = query;
+          _searchQuery = query;
+        });
+      },
+    );
   }
 }

@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import '../../ai/ai_config.dart';
 import '../../app/theme.dart';
+import '../../models/app_settings.dart';
 import '../../widgets/widgets.dart';
 import '../about/about_screen.dart';
 import '../history/history_screen.dart';
@@ -12,11 +14,25 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
-  String _deviceName = "Akash's Android";
-  bool _autoAccept = false;
-  double _maxParallelConnections = 5.0;
-  bool _showNotifications = true;
-  String _storageLocation = "/storage/emulated/0/FluxShare";
+  final AIConfig _aiConfig = AIConfig();
+  final AppSettings _settings = AppSettings();
+  late String _deviceName;
+  late bool _autoAccept;
+  late double _maxParallelConnections;
+  late bool _showNotifications;
+  late String _storageLocation;
+
+  @override
+  void initState() {
+    super.initState();
+    _deviceName = _settings.deviceName;
+    _autoAccept = _settings.autoAccept;
+    _maxParallelConnections = _settings.maxParallelConnections.toDouble();
+    _showNotifications = _settings.showNotifications;
+    _storageLocation = _settings.customDownloadPath.isNotEmpty
+        ? _settings.customDownloadPath
+        : 'App Documents/FluxShare';
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -101,7 +117,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
               children: [
                 SwitchListTile(
                   value: _autoAccept,
-                  onChanged: (val) => setState(() => _autoAccept = val),
+                  onChanged: (val) async {
+                    await _settings.setAutoAccept(val);
+                    setState(() => _autoAccept = val);
+                  },
                   title: const Text(
                     'Auto Accept Transfers',
                     style: TextStyle(
@@ -186,7 +205,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           max: 10.0,
                           divisions: 9,
                           label: '${_maxParallelConnections.toInt()}',
-                          onChanged: (val) {
+                          onChanged: (val) async {
+                            await _settings.setMaxParallelConnections(val.toInt());
                             setState(() => _maxParallelConnections = val);
                           },
                         ),
@@ -197,7 +217,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 const Divider(height: 1, color: AppColors.borderGray),
                 SwitchListTile(
                   value: _showNotifications,
-                  onChanged: (val) => setState(() => _showNotifications = val),
+                  onChanged: (val) async {
+                    await _settings.setShowNotifications(val);
+                    setState(() => _showNotifications = val);
+                  },
                   title: const Text(
                     'Show Transfer Notifications',
                     style: TextStyle(
@@ -266,6 +289,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
           ),
           const SizedBox(height: AppSpacing.s24),
+
+          // AI & PRIVACY section
+          _buildAiPrivacySection(),
 
           // HISTORY section
           const SectionHeader(title: 'HISTORY'),
@@ -486,6 +512,257 @@ class _SettingsScreenState extends State<SettingsScreen> {
           },
         );
       },
+    );
+  }
+
+  Widget _buildAiPrivacySection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SectionHeader(title: 'AI & PRIVACY'),
+        Container(
+          decoration: BoxDecoration(
+            color: AppColors.backgroundWhite,
+            borderRadius: AppShapes.cardBorderRadius,
+            border: Border.all(color: AppColors.borderGray),
+          ),
+          child: Column(
+            children: [
+              SwitchListTile(
+                value: _aiConfig.isAiEnabled,
+                onChanged: (val) async {
+                  await _aiConfig.setAiEnabled(val);
+                  setState(() {});
+                },
+                title: const Text(
+                  'AI Assistance',
+                  style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
+                    color: AppColors.primaryBlack,
+                  ),
+                ),
+                subtitle: const Text(
+                  'Enable transfer optimization, failure detection & smart organization',
+                  style: TextStyle(fontSize: 13, color: AppColors.mediumGray),
+                ),
+                activeColor: AppColors.primaryBlack,
+              ),
+              if (_aiConfig.isAiEnabled) ...[
+                const Divider(height: 1, color: AppColors.borderGray),
+                SwitchListTile(
+                  value: _aiConfig.allowCloudAi,
+                  onChanged: (val) async {
+                    await _aiConfig.setAllowCloudAi(val);
+                    setState(() {});
+                  },
+                  title: const Text(
+                    'Allow Cloud AI (Google Gemini)',
+                    style: TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.primaryBlack,
+                    ),
+                  ),
+                  subtitle: Text(
+                    _aiConfig.allowCloudAi
+                        ? 'Cloud analysis enabled. Only metadata is analyzed; private files are never uploaded.'
+                        : 'Privacy First: Off = 100% offline local rule engine.',
+                    style: const TextStyle(fontSize: 13, color: AppColors.mediumGray),
+                  ),
+                  activeColor: AppColors.primaryBlack,
+                ),
+                if (_aiConfig.allowCloudAi) ...[
+                  const Divider(height: 1, color: AppColors.borderGray),
+                  ListTile(
+                    onTap: _showApiKeyDialog,
+                    leading: const Icon(Icons.key_rounded, color: AppColors.primaryBlack, size: 20),
+                    title: const Text(
+                      'Gemini API Key',
+                      style: TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w600,
+                        color: AppColors.primaryBlack,
+                      ),
+                    ),
+                    subtitle: Text(
+                      _aiConfig.hasValidApiKey ? '••••••••••••••••' : 'Not configured (tap to set)',
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: _aiConfig.hasValidApiKey ? AppColors.darkGray : Colors.red,
+                      ),
+                    ),
+                    trailing: const Icon(Icons.edit_rounded, size: 18, color: AppColors.primaryBlack),
+                  ),
+                ],
+                const Divider(height: 1, color: AppColors.borderGray),
+                SwitchListTile(
+                  value: _aiConfig.autoSuggestOrganization,
+                  onChanged: (val) async {
+                    await _aiConfig.setAutoSuggestOrganization(val);
+                    setState(() {});
+                  },
+                  title: const Text(
+                    'Smart File Organization',
+                    style: TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.primaryBlack,
+                    ),
+                  ),
+                  subtitle: const Text(
+                    'Suggest categorized folders upon receiving files',
+                    style: TextStyle(fontSize: 13, color: AppColors.mediumGray),
+                  ),
+                  activeColor: AppColors.primaryBlack,
+                ),
+                const Divider(height: 1, color: AppColors.borderGray),
+                SwitchListTile(
+                  value: _aiConfig.failureAnomalyDetection,
+                  onChanged: (val) async {
+                    await _aiConfig.setFailureAnomalyDetection(val);
+                    setState(() {});
+                  },
+                  title: const Text(
+                    'Transfer Failure Detection',
+                    style: TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.primaryBlack,
+                    ),
+                  ),
+                  subtitle: const Text(
+                    'Diagnose speed drops and repeated checksum mismatches',
+                    style: TextStyle(fontSize: 13, color: AppColors.mediumGray),
+                  ),
+                  activeColor: AppColors.primaryBlack,
+                ),
+              ],
+            ],
+          ),
+        ),
+        const SizedBox(height: AppSpacing.s24),
+      ],
+    );
+  }
+
+  void _showApiKeyDialog() {
+    final controller = TextEditingController(text: _aiConfig.geminiApiKey);
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: AppColors.backgroundWhite,
+        shape: AppShapes.cardShape,
+        title: const Text(
+          'Google Gemini API Key',
+          style: TextStyle(
+            fontWeight: FontWeight.bold,
+            color: AppColors.primaryBlack,
+          ),
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Enter your Gemini API key to enable cloud reasoning. Stored securely on your device, never hard-coded.',
+              style: TextStyle(fontSize: 13, color: AppColors.mediumGray),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: controller,
+              obscureText: true,
+              decoration: const InputDecoration(
+                hintText: 'AIzaSy...',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              await _aiConfig.setGeminiApiKey(controller.text);
+              setState(() {});
+              Navigator.of(context).pop();
+            },
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showEditDeviceNameDialog() {
+    final controller = TextEditingController(text: _deviceName);
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: AppColors.backgroundWhite,
+        shape: AppShapes.cardShape,
+        title: const Text(
+          'Edit Device Name',
+          style: TextStyle(
+            fontWeight: FontWeight.bold,
+            color: AppColors.primaryBlack,
+          ),
+        ),
+        content: TextField(
+          controller: controller,
+          decoration: const InputDecoration(
+            hintText: 'Enter device name',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              final newName = controller.text.trim();
+              if (newName.isNotEmpty) {
+                await _settings.setDeviceName(newName);
+                setState(() => _deviceName = newName);
+              }
+              if (mounted) Navigator.of(context).pop();
+            },
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showStorageLocationDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: AppColors.backgroundWhite,
+        shape: AppShapes.cardShape,
+        title: const Text(
+          'Storage Location',
+          style: TextStyle(
+            fontWeight: FontWeight.bold,
+            color: AppColors.primaryBlack,
+          ),
+        ),
+        content: Text(
+          'Files received via FluxShare are stored securely in:\n$_storageLocation\n\nOn Android, completed and verified transfers are automatically exported to Public Downloads/FluxShare.',
+          style: const TextStyle(fontSize: 14, color: AppColors.darkGray),
+        ),
+        actions: [
+          ElevatedButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
     );
   }
 }

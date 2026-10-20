@@ -121,6 +121,32 @@ object NetworkUtils {
     }
 
     /**
+     * Accurately determines the local IP address used to communicate with a target IP.
+     * Uses a temporary UDP socket connect to look up the routing table interface
+     * without sending network packets.
+     */
+    fun getExactLocalIpForTarget(targetIp: String, targetPort: Int = 8080): String? {
+        if (targetIp.isBlank() || targetIp == "127.0.0.1" || targetIp == "localhost") {
+            return getLocalIpAddress()
+        }
+        return try {
+            java.net.DatagramSocket().use { socket ->
+                socket.connect(java.net.InetAddress.getByName(targetIp), if (targetPort > 0) targetPort else 8080)
+                val addr = socket.localAddress?.hostAddress
+                if (!addr.isNullOrBlank() && !addr.startsWith("127.") && addr != "0.0.0.0") {
+                    SafeLog.d(SafeLog.NETWORK, "Exact local IP determined for target $targetIp: $addr")
+                    addr
+                } else {
+                    getLocalIpAddress()
+                }
+            }
+        } catch (e: Exception) {
+            SafeLog.w(SafeLog.NETWORK, "Could not determine local IP via route to $targetIp: ${e.message}")
+            getLocalIpAddress()
+        }
+    }
+
+    /**
      * Verifies HTTP connectivity to peer /health endpoint.
      */
     suspend fun testPeerConnectivity(

@@ -412,7 +412,8 @@ class MainViewModel : ViewModel() {
                 }
             }
 
-            val resolvedLocalIp = NetworkUtils.getLocalIpAddress() ?: ""
+            val resolvedLocalIp = NetworkUtils.getExactLocalIpForTarget(discoveredRoom.ip, discoveredRoom.port)
+                ?: NetworkUtils.getLocalIpAddress() ?: ""
             _roomInfo.update {
                 RoomInfo(
                     isHosting = false,
@@ -514,33 +515,43 @@ class MainViewModel : ViewModel() {
                 )
             }
 
-            // Obtain candidate peers excluding local peer
-            val otherPeers = peerMeshManager.getPeersExcluding(_settings.value.deviceName).toMutableList()
-
-            // Ensure sender peer is present with all chunks
+            // Dynamic swarm provider combining live mesh peers and the host peer
             val senderPort = _roomInfo.value.serverPort
-            val senderInList = otherPeers.any { it.ip == senderIp }
-            if (!senderInList) {
-                val hostPeer = PeerInfo(
-                    peerId = "Sender-$senderIp",
-                    ip = senderIp,
-                    port = senderPort,
-                    availableChunks = (0 until manifest.chunks.size).toMutableSet()
-                )
-                otherPeers.add(hostPeer)
-            } else {
-                // Ensure sender peer marks all initial chunks available if host
-                otherPeers.find { it.ip == senderIp }?.availableChunks?.addAll(0 until manifest.chunks.size)
+            val allChunkIds = (0 until manifest.chunks.size).toSet()
+
+            val livePeersProvider: () -> List<PeerInfo> = {
+                val liveList = peerMeshManager.getPeersExcluding(_settings.value.deviceName).toMutableList()
+                val hostInList = liveList.find { it.ip == senderIp || it.peerId.startsWith("Sender", ignoreCase = true) }
+                if (hostInList == null) {
+                    liveList.add(
+                        PeerInfo(
+                            peerId = "Sender-$senderIp",
+                            ip = senderIp,
+                            port = senderPort,
+                            availableChunks = allChunkIds.toMutableSet()
+                        )
+                    )
+                } else {
+                    hostInList.availableChunks.addAll(allChunkIds)
+                }
+                liveList
             }
 
-            SafeLog.i(SafeLog.TRANSFER, "Starting real cooperative download using peers: ${otherPeers.map { "${it.peerId}@${it.ip}:${it.port}" }}")
+            val cooperativeScheduler = com.fluxshare.scheduler.CooperativeScheduler(
+                receiverId = _settings.value.deviceName,
+                hostPeerId = "Sender-$senderIp"
+            )
+
+            SafeLog.i(SafeLog.TRANSFER, "Starting real cooperative download using live mesh and host $senderIp:$senderPort")
 
             val success = try {
                 chunkReceiverManager.downloadFileCooperative(
                     manifest = manifest,
-                    peers = otherPeers,
                     destFile = destFile,
                     receiverId = _settings.value.deviceName,
+                    scheduler = cooperativeScheduler,
+                    peersProvider = livePeersProvider,
+                    concurrency = 4,
                     onChunkVerified = { chunkId ->
                         p2pServer.markChunkAvailable(chunkId)
                         peerMeshManager.onLocalChunkVerified(chunkId, manifest.fileId)

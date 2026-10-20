@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
+import '../../ai/ai_models.dart';
+import '../../ai/ai_service.dart';
 import '../../app/theme.dart';
 import '../../models/models.dart';
 import '../../network/local_server.dart';
@@ -46,6 +48,10 @@ class _TransferProgressScreenState extends State<TransferProgressScreen> {
   bool _isPaused = false;
   bool _isCancelled = false;
 
+  AITransferOptimization? _currentOptimization;
+  AIFailureDiagnosis? _currentDiagnosis;
+  bool _optimizationApplied = false;
+
   StreamSubscription<TransferProgressEvent>? _engineSub;
   final Map<String, double> _receiverProgressMap = {};
 
@@ -64,6 +70,18 @@ class _TransferProgressScreenState extends State<TransferProgressScreen> {
 
     _receiverDevices = widget.receivers ?? [];
 
+    final aiService = AIService();
+    if (aiService.config.isAiEnabled) {
+      _currentOptimization = aiService.optimizer.recommendOptimization(
+        fileSize: _file.sizeBytes,
+        currentSpeedMbPerSec: 15.0,
+        avgLatencyMillis: 60.0,
+        completedChunks: 1,
+        retransmissionCount: 0,
+      );
+      _currentDiagnosis = AIFailureDiagnosis.normal;
+    }
+
     if (widget.engine != null) {
       _bindTransferEngine(widget.engine!);
     } else if (widget.isHost) {
@@ -74,6 +92,22 @@ class _TransferProgressScreenState extends State<TransferProgressScreen> {
   void _bindTransferEngine(TransferEngine engine) {
     _engineSub = engine.progressStream.listen((event) {
       if (!mounted) return;
+
+      final aiService = AIService();
+      if (aiService.config.isAiEnabled) {
+        aiService.failureDetector.recordChunkSuccess(event.speedMbPerSec);
+        if (!_optimizationApplied) {
+          _currentOptimization = aiService.optimizer.recommendOptimization(
+            fileSize: _file.sizeBytes,
+            currentSpeedMbPerSec: event.speedMbPerSec,
+            avgLatencyMillis: 70.0,
+            completedChunks: (event.progressPercent * 2).round(),
+            retransmissionCount: 0,
+            currentWorkers: engine.concurrentWorkers,
+          );
+        }
+        _currentDiagnosis = aiService.failureDetector.diagnose();
+      }
 
       setState(() {
         _progressPercent = event.progressPercent;
@@ -86,9 +120,32 @@ class _TransferProgressScreenState extends State<TransferProgressScreen> {
       if (event.status == TransferStatus.completed) {
         _onTransferSuccess();
       } else if (event.status == TransferStatus.failed) {
+        if (aiService.config.isAiEnabled) {
+          aiService.failureDetector.recordChunkFailure(event.errorMessage ?? 'Verification error');
+          _currentDiagnosis = aiService.failureDetector.diagnose();
+        }
         _showErrorDialog(event.errorMessage ?? 'Transfer verification failed.');
       }
     });
+  }
+
+  void _applyRecommendation() {
+    if (_currentOptimization == null) return;
+    widget.engine?.applyOptimizationSettings(
+      maxWorkers: _currentOptimization!.recommendedParallelWorkers,
+    );
+    setState(() {
+      _optimizationApplied = true;
+      _currentOptimization!.isApplied = true;
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          'Optimization Applied: Set to ${_currentOptimization!.recommendedParallelWorkers} workers with ${_currentOptimization!.recommendedChunkSizeLabel} chunks.',
+        ),
+        backgroundColor: AppColors.primaryBlack,
+      ),
+    );
   }
 
   void _bindHostControl() {
@@ -421,7 +478,18 @@ class _TransferProgressScreenState extends State<TransferProgressScreen> {
                         ],
                       ),
                     ),
-                    const SizedBox(height: AppSpacing.s24),
+                    const SizedBox(height: AppSpacing.s16),
+
+                    // AI Transfer Insight & Optimization Card
+                    if (AIService().config.isAiEnabled) ...[
+                      AITransferInsightCard(
+                        optimization: _currentOptimization,
+                        diagnosis: _currentDiagnosis,
+                        isApplied: _optimizationApplied,
+                        onApplyRecommendation: _applyRecommendation,
+                      ),
+                      const SizedBox(height: AppSpacing.s16),
+                    ],
 
                     // RECEIVER PROGRESS section
                     if (_receiverDevices.isNotEmpty) ...[

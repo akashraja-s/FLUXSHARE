@@ -412,6 +412,33 @@ class TransferEngine {
     _progressController.add(event);
   }
 
+  /// Applies dynamic optimization settings recommended by AI and approved by user.
+  void applyOptimizationSettings({int? maxWorkers}) {
+    if (maxWorkers != null && maxWorkers > 0 && _status == TransferStatus.transferring) {
+      if (maxWorkers < _workers.length) {
+        while (_workers.length > maxWorkers) {
+          final removed = _workers.removeLast();
+          removed.stop();
+        }
+      } else if (maxWorkers > _workers.length) {
+        final startIdx = _workers.length;
+        for (int i = startIdx; i < maxWorkers; i++) {
+          final worker = TransferWorker(
+            workerId: 'worker_$i',
+            reservationManager: _reservationManager,
+            writerSession: _writerSession,
+            downloader: _sharedDownloader,
+            getNextWork: _selectNextWork,
+            onChunkSuccess: _handleChunkSuccess,
+            onChunkFailure: _handleChunkFailure,
+          );
+          _workers.add(worker);
+          worker.start();
+        }
+      }
+    }
+  }
+
   void dispose() {
     _progressTimer?.cancel();
     _progressController.close();

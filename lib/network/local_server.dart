@@ -15,10 +15,15 @@ typedef ControlMessageHandler = void Function(Map<String, dynamic> message);
 /// Embedded P2P server running on 0.0.0.0.
 /// Hosts HTTP endpoints (/health, /manifest, /chunk/<id>, /peer, /room/join) and WebSocket (/ws).
 class LocalServer {
+  static final LocalServer _instance = LocalServer._internal();
+  factory LocalServer() => _instance;
+  LocalServer._internal();
+
   HttpServer? _server;
   int _port = 0;
   int get port => _port;
   bool get isRunning => _server != null;
+  int get activeControlSocketsCount => _activeWsClients.length;
 
   String localPeerId = 'Peer-${DateTime.now().millisecondsSinceEpoch % 10000}';
   String localDeviceName = 'FluxShare Device';

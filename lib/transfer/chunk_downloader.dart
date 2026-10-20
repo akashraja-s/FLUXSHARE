@@ -83,7 +83,7 @@ class ChunkDownloader {
       }
 
       // Stream incoming bytes directly to disk and in-flight hasher
-      await response.timeout(requestTimeout).forEach((List<int> buffer) async {
+      await for (final buffer in response.timeout(requestTimeout)) {
         if (timeToFirstByte == null) {
           timeToFirstByte = stopwatch.elapsed;
         }
@@ -91,10 +91,10 @@ class ChunkDownloader {
         inFlightHasher.add(buffer);
         bytesReceived += buffer.length;
 
-        // Write incremental buffer to disk
+        // Write incremental buffer to disk sequentially
         await writerSession.writeChunk(currentOffset, buffer);
         currentOffset += buffer.length;
-      });
+      }
 
       inFlightHasher.close();
 

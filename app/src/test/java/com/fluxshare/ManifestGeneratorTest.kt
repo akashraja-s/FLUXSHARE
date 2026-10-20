@@ -84,4 +84,45 @@ class ManifestGeneratorTest {
         assertEquals(data.size.toLong(), manifest.fileSize)
         assertEquals(1, manifest.chunks.size)
     }
+
+    @Test
+    fun testZeroByteFile() {
+        val emptyData = ByteArray(0)
+        val stream = ByteArrayInputStream(emptyData)
+
+        val manifest = ManifestGenerator.generate(
+            inputStream = stream,
+            fileName = "empty.bin",
+            fileSize = 0L,
+            chunkSize = 1024 * 1024
+        )
+
+        assertEquals("empty.bin", manifest.fileName)
+        assertEquals(0L, manifest.fileSize)
+        assertEquals(0, manifest.chunks.size)
+        // SHA-256 of empty byte array
+        assertEquals("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", manifest.fileSha256)
+    }
+
+    @Test
+    fun testExactOneMBMultiple() {
+        val chunkSize = 1024 * 1024 // 1 MB
+        val totalSize = 2 * chunkSize // exact 2 MB
+        val testData = ByteArray(totalSize) { (it % 256).toByte() }
+
+        val stream = ByteArrayInputStream(testData)
+        val manifest = ManifestGenerator.generate(
+            inputStream = stream,
+            fileName = "exact_2mb.bin",
+            fileSize = totalSize.toLong(),
+            chunkSize = chunkSize
+        )
+
+        assertEquals(2, manifest.chunks.size)
+        assertEquals(0, manifest.chunks[0].chunkId)
+        assertEquals(chunkSize, manifest.chunks[0].length)
+        assertEquals(1, manifest.chunks[1].chunkId)
+        assertEquals(chunkSize, manifest.chunks[1].length)
+        assertEquals((chunkSize).toLong(), manifest.chunks[1].offset)
+    }
 }

@@ -66,6 +66,8 @@ class TransferRepository {
   Stream<Transfer> simulateTransferProgress(String transferId) => getTransferStream(transferId);
 
   void updateTransfer(Transfer transfer) {
+    _controllers[transfer.id]?.add(transfer);
+
     if (transfer.status == TransferStatus.completed ||
         transfer.status == TransferStatus.failed ||
         transfer.status == TransferStatus.cancelled) {
@@ -73,11 +75,15 @@ class TransferRepository {
       _transferHistory.removeWhere((t) => t.id == transfer.id);
       _transferHistory.add(transfer);
       _persistHistory();
+
+      // Close controller after terminal event delivery to prevent memory leak
+      Future.delayed(const Duration(milliseconds: 500), () {
+        _controllers[transfer.id]?.close();
+        _controllers.remove(transfer.id);
+      });
     } else {
       _activeTransfers[transfer.id] = transfer;
     }
-
-    _controllers[transfer.id]?.add(transfer);
   }
 
   Future<void> pauseTransfer(String transferId) async {

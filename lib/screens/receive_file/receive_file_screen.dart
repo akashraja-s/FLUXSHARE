@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 import '../../app/theme.dart';
 import '../../discovery/discovery_service.dart';
+import '../../file/filename_sanitizer.dart';
 import '../../models/models.dart';
 import '../../network/http_client.dart';
 import '../../network/local_server.dart';
@@ -86,7 +87,12 @@ class _ReceiveFileScreenState extends State<ReceiveFileScreen>
       }
 
       final httpClient = P2PHttpClient();
-      final result = await httpClient.downloadManifest(room.ip, room.port);
+      ManifestFetchResult result;
+      try {
+        result = await httpClient.downloadManifest(room.ip, room.port);
+      } finally {
+        httpClient.close();
+      }
 
       if (result is ManifestFetchSuccess) {
         final manifest = result.manifest;
@@ -511,7 +517,11 @@ class _ReceiveFileScreenState extends State<ReceiveFileScreen>
 
                         try {
                           final docsDir = await getApplicationDocumentsDirectory();
-                          final destFile = File('${docsDir.path}/${_currentManifest!.fileName}');
+                          final destDir = Directory('${docsDir.path}/FluxShare');
+                          final destFile = await FilenameSanitizer.resolveUniqueFile(
+                            destDir,
+                            _currentManifest!.fileName,
+                          );
 
                           final localServer = LocalServer();
                           await localServer.start();

@@ -187,6 +187,12 @@ open class P2PServer(private val initialPort: Int = 0) {
                         return@get
                     }
 
+                    if (chunk.length <= 0 || chunk.offset < 0 || chunk.offset + chunk.length > file.length()) {
+                        SafeLog.e(SafeLog.CHUNK, "GET /chunk/$chunkId failed: invalid chunk bounds offset=${chunk.offset} length=${chunk.length} fileSize=${file.length()}")
+                        call.respond(HttpStatusCode.BadRequest, "Chunk offset/length out of bounds")
+                        return@get
+                    }
+
                     if (!isChunkAvailable(chunkId)) {
                         SafeLog.e(SafeLog.CHUNK, "GET /chunk/$chunkId failed: chunk not available on this peer")
                         call.respond(HttpStatusCode.NotFound, "Chunk $chunkId not available on this peer")
@@ -213,11 +219,13 @@ open class P2PServer(private val initialPort: Int = 0) {
                 }
 
                 webSocket("/ws") {
-                    handleWebSocketSession(this)
+                    val remoteHost = try { call.request.local.remoteHost } catch (_: Exception) { "" }
+                    handleWebSocketSession(this, remoteHost)
                 }
 
                 webSocket("/control") {
-                    handleWebSocketSession(this)
+                    val remoteHost = try { call.request.local.remoteHost } catch (_: Exception) { "" }
+                    handleWebSocketSession(this, remoteHost)
                 }
             }
         }
@@ -238,9 +246,9 @@ open class P2PServer(private val initialPort: Int = 0) {
         return boundPort
     }
 
-    private suspend fun handleWebSocketSession(session: WebSocketSession) {
+    private suspend fun handleWebSocketSession(session: WebSocketSession, remoteHost: String = "") {
         activeWsSessions.add(session)
-        SafeLog.i(SafeLog.SERVER, "WebSocket session connected: session=${session.hashCode()}")
+        SafeLog.i(SafeLog.SERVER, "WebSocket session connected: session=${session.hashCode()} remoteHost=$remoteHost")
 
         // Immediately inform newly connected client about host state if manifest is active
         if (isHost && currentManifest != null) {
@@ -277,19 +285,40 @@ open class P2PServer(private val initialPort: Int = 0) {
                 if (frame is Frame.Text) {
                     val text = frame.readText()
                     try {
-                        val msg = json.decodeFromString(ControlMessage.serializer(), text)
+                        var msg = json.decodeFromString(ControlMessage.serializer(), text)
                         SafeLog.d(SafeLog.SERVER, "Server received ControlMessage: ${msg.type} from peer ${msg.peerId}")
 
                         // Track peers internally
                         when (msg.type) {
                             ControlMessageType.PEER_JOINED -> {
+                                val rawIp = msg.ip
+                                val resolvedIp = if (!rawIp.isNullOrBlank() && !rawIp.startsWith("127.") && rawIp != "0.0.0.0") {
+                                    rawIp
+                                } else if (remoteHost.isNotBlank() && !remoteHost.startsWith("127.") && remoteHost != "0.0.0.0") {
+                                    remoteHost
+                                } else {
+                                    rawIp ?: ""
+                                }
+
+                                if (resolvedIp != msg.ip) {
+                                    msg = msg.copy(ip = resolvedIp)
+                                }
+
                                 val existing = knownPeers[msg.peerId]
                                 if (existing != null) {
-                                    existing.availableChunks.addAll(msg.availableChunks)
+                                    val mergedChunks = (existing.availableChunks + msg.availableChunks).toMutableSet()
+                                    val newIp = if (resolvedIp.isNotBlank()) resolvedIp else existing.ip
+                                    val newPort = if ((msg.port ?: 0) > 0) msg.port!! else existing.port
+                                    knownPeers[msg.peerId] = existing.copy(
+                                        ip = newIp,
+                                        port = newPort,
+                                        availableChunks = mergedChunks,
+                                        lastSeenMillis = System.currentTimeMillis()
+                                    )
                                 } else {
                                     knownPeers[msg.peerId] = PeerInfo(
                                         peerId = msg.peerId,
-                                        ip = msg.ip ?: "",
+                                        ip = resolvedIp,
                                         port = msg.port ?: 0,
                                         availableChunks = msg.availableChunks.toMutableSet()
                                     )
@@ -346,6 +375,9 @@ open class P2PServer(private val initialPort: Int = 0) {
         server = null
         boundPort = 0
         knownPeers.clear()
+        verifiedChunks.clear()
+        currentManifest = null
+        currentSourceFile = null
     }
 }
 
